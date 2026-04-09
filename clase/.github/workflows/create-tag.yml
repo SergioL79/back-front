@@ -1,0 +1,68 @@
+name: Auto Tag and Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+      - developer
+  workflow_dispatch:
+
+jobs:
+  tag_and_release:
+    if: github.event.pull_request.merged == true || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Necesario para crear tags y releases
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate Tag
+        id: create_tag # Le damos un ID para usar el tag más adelante
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 1. Obtener el último tag estable (que no sea -dev)
+          LATEST_TAG=$(git tag -l "v*" | grep -v "-dev" | sort -V | tail -n1)
+          if [ -z "$LATEST_TAG" ]; then LATEST_TAG="v0.0.0"; fi
+          
+          # 2. Calcular nueva versión
+          VERSION=${LATEST_TAG#v}
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          NEW_PATCH=$((PATCH + 1))
+          
+          # 3. Identificar rama destino
+          DEST_BRANCH=${{ github.base_ref || github.ref_name }}
+
+          if [ "$DEST_BRANCH" == "developer" ]; then
+            NEW_TAG="v$MAJOR.$MINOR.$NEW_PATCH-dev"
+          else
+            NEW_TAG="v$MAJOR.$MINOR.$NEW_PATCH"
+          fi
+
+          # 4. Crear y subir Tag
+          git tag $NEW_TAG
+          git push origin $NEW_TAG
+          
+          # Guardar el tag en una variable de salida para el siguiente paso
+          echo "tag_name=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "dest_branch=$DEST_BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        # Solo crea la Release si la rama destino es 'main'
+        if: steps.create_tag.outputs.dest_branch == 'main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.create_tag.outputs.tag_name }}
+          name: Release ${{ steps.create_tag.outputs.tag_name }}
+          body: |
+            ## ¿Qué hay de nuevo?
+            - Merge automático realizado en la rama `main`.
+            - Los cambios de este tag ya están disponibles.
+          draft: false
+          prerelease: false
